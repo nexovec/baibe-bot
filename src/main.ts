@@ -1,9 +1,6 @@
-import roleBuilder, { Builder } from "roles/builder";
-import roleHarvester from "roles/harvester";
-import roleUpgrader, { Upgrader } from "roles/upgrader";
 import ErrorMapper from "utils/ErrorMapper";
-import { runTower } from "./tower";
 import { init, tick } from "./entry";
+import "settings";
 
 declare global {
   interface CreepMemory {
@@ -15,23 +12,27 @@ declare global {
   }
 }
 
+let suspended = false;
+let initialized = false;
+
 function unwrappedLoop(): void {
-  console.log(`Current game tick is ${Game.time}`);
-  Object.values(Game.rooms).forEach((room) => {
-    if (room.controller?.my) {
-      const towers = room.find<StructureTower>(FIND_MY_STRUCTURES, { filter: { structureType: STRUCTURE_TOWER } });
-
-      towers.forEach((tower) => {
-        runTower(tower);
-      });
+  // console.log(`Current game tick is ${Game.time}`);
+  // console.log("At least I run");
+  if (!suspended) {
+    if (!initialized) {
+      init();
+      initialized = true;
     }
-  });
-
+    tick();
+  }
   // Automatically delete memory of missing creeps
   if (Memory.creeps != null) {
     Object.keys(Memory.creeps)
       .filter((name) => !(name in Game.creeps))
       .forEach((name) => delete Memory.creeps[name]);
+  }
+  if (Game.cpu.bucket > PIXEL_CPU_COST && Game.cpu.generatePixel != null) {
+    Game.cpu.generatePixel();
   }
 }
 
@@ -42,13 +43,14 @@ const loop = ErrorMapper.wrapLoop(unwrappedLoop);
 // CUSTOM CLI FUNCTIONS
 
 interface custom_fns extends NodeJS.Global {
-  toggle_running?: () => void;
+  suspend?: () => boolean;
   genocide?: () => string;
   reset_profiler?: () => string;
 }
 const custom_global: custom_fns = global;
-custom_global.toggle_running = function (): void {
-  throw Error("Not yet implemented");
+custom_global.suspend = function (): boolean {
+  suspended = !suspended;
+  return suspended;
 };
 custom_global.genocide = function (): string {
   for (const creep of Object.values(Game.creeps)) {
