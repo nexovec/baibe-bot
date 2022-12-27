@@ -3,8 +3,24 @@ import { init, tick } from "./entry";
 import "settings";
 
 declare global {
+  enum SimultaneousActions {
+    HARVEST = 0,
+    ATTACK,
+    RANGED_ATTACK,
+    RANGED_MASS_ATTACK,
+    UPGRADE_CONTROLLER,
+    WITHDRAW,
+    TRANSFER,
+    DROP,
+    BUILD,
+    REPAIR,
+    DISMANTLE,
+    ATTACK_CONTROLLER,
+    RANGED_HEAL,
+    HEAL
+  }
   interface CreepMemory {
-    role: string;
+    transfering: boolean;
   }
   interface Memory {
     cpu: unknown;
@@ -17,7 +33,15 @@ let initialized = false;
 
 function unwrappedLoop(): void {
   // console.log(`Current game tick is ${Game.time}`);
-  // console.log("At least I run");
+  // Automatically delete memory of missing creeps
+  if (Memory.creeps != null) {
+    Object.keys(Memory.creeps)
+      .filter((name) => !(name in Game.creeps))
+      .forEach((name) => delete Memory.creeps[name]);
+    Object.keys(Game.creeps)
+      .filter((name) => !(name in Memory.creeps))
+      .map((name) => (Memory.creeps[name] = { transfering: false }));
+  }
   if (!suspended) {
     if (!initialized) {
       init();
@@ -25,12 +49,7 @@ function unwrappedLoop(): void {
     }
     tick();
   }
-  // Automatically delete memory of missing creeps
-  if (Memory.creeps != null) {
-    Object.keys(Memory.creeps)
-      .filter((name) => !(name in Game.creeps))
-      .forEach((name) => delete Memory.creeps[name]);
-  }
+
   if (Game.cpu.bucket > PIXEL_CPU_COST && Game.cpu.generatePixel != null) {
     Game.cpu.generatePixel();
   }
