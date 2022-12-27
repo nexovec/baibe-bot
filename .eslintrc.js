@@ -9,7 +9,7 @@ module.exports = {
     'plugin:@typescript-eslint/recommended-requiring-type-checking'
   ],
   rules: {
-    'arrow-parens': ['error', 'as-needed'],
+    'arrow-parens': ['error'],
     'comma-dangle': ['error', 'never'],
     'import/no-unresolved': ['off'],
     'linebreak-style': 'off',
@@ -20,7 +20,7 @@ module.exports = {
     'object-curly-newline': ['error', { 'multiline': true }],
     'padded-blocks': ['error', {
       'blocks': 'never',
-      'classes': 'always',
+      'classes': 'never',
       'switches': 'never'
     }],
     '@typescript-eslint/explicit-function-return-type': 'off',
