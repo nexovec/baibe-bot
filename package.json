@@ -1,0 +1,58 @@
+{
+  "name": "screeps-typescript-starter",
+  "version": "3.0.0",
+  "description": "",
+  "main": "index.js",
+  "//": "If you add or change the names of destinations in screeps.json, make sure you update these scripts to reflect the changes",
+  "scripts": {
+    "lint": "eslint . --ext .js,.ts",
+    "lint-stats": "eslint . --ext .js,.ts --format \"node_modules/eslint-stats/byErrorAndWarning.js\"",
+    "build": "rollup -c",
+    "push-main": "rollup -c --environment DEST:main",
+    "push-pserver": "rollup -c --environment DEST:pserver",
+    "push-sim": "rollup -c --environment DEST:sim",
+    "test": "jest",
+    "test-watch": "jest --watch",
+    "test-cov": "jest --coverage",
+    "test-only": "bash -c 'jest --watch --coverage --verbose --collectCoverageFrom=\"**/*$1*\" $1' -- ",
+    "watch-main": "rollup -cw --environment DEST:main",
+    "watch-pserver": "rollup -cw --environment DEST:pserver",
+    "watch-sim": "rollup -cw --environment DEST:sim"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/screepers/screeps-typescript-starter.git"
+  },
+  "author": "",
+  "license": "Unlicense",
+  "bugs": {
+    "url": "https://github.com/screepers/screeps-typescript-starter/issues"
+  },
+  "homepage": "https://github.com/screepers/screeps-typescript-starter#readme",
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^20.0.0",
+    "@rollup/plugin-node-resolve": "^13.0.4",
+    "@types/jest": "^27.0.1",
+    "@types/lodash": "3.10.2",
+    "@types/node": "^10.5.5",
+    "@types/screeps": "^3.2.2",
+    "@typescript-eslint/eslint-plugin": "^4.31.0",
+    "@typescript-eslint/parser": "^4.31.0",
+    "eslint": "^7.32.0",
+    "eslint-plugin-import": "^2.24.2",
+    "eslint-stats": "^1.0.1",
+    "jest": "^27.1.0",
+    "lodash": "^3.10.1",
+    "rollup": "^2.56.3",
+    "rollup-plugin-clear": "^2.0.7",
+    "rollup-plugin-screeps": "^1.0.1",
+    "rollup-plugin-typescript2": "^0.30.0",
+    "screeps-jest": "^2.0.2",
+    "ts-jest": "^27.0.5",
+    "ts-node": "^7.0.1",
+    "typescript": "^4.2.3"
+  },
+  "dependencies": {
+    "source-map": "~0.6.1"
+  }
+}
