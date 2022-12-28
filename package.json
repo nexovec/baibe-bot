@@ -55,7 +55,6 @@
   },
   "dependencies": {
     "@rollup/plugin-json": "^6.0.0",
-    "assert": "^2.0.0",
     "source-map": "~0.6.1"
   }
 }

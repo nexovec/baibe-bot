@@ -20,7 +20,6 @@ declare global {
     HEAL
   }
   interface CreepMemory {
-    transfering: boolean;
     custom_msg?: string;
   }
   interface Memory {
@@ -35,14 +34,15 @@ let initialized = false;
 function unwrappedLoop(): void {
   // console.log(`Current game tick is ${Game.time}`);
   // Automatically delete memory of missing creeps
-  if (Memory.creeps != null) {
-    Object.keys(Memory.creeps)
-      .filter((name) => !(name in Game.creeps))
-      .forEach((name) => delete Memory.creeps[name]);
-    Object.keys(Game.creeps)
-      .filter((name) => !(name in Memory.creeps))
-      .map((name) => (Memory.creeps[name] = { transfering: false }));
+  if (Memory.creeps == null) {
+    Memory.creeps = {};
   }
+  Object.keys(Memory.creeps)
+    .filter((name) => !(name in Game.creeps))
+    .forEach((name) => delete Memory.creeps[name]);
+  Object.keys(Game.creeps)
+    .filter((name) => !(name in Memory.creeps))
+    .map((name) => (Memory.creeps[name] = {}));
   if (!suspended) {
     if (!initialized) {
       init();
