@@ -3,7 +3,7 @@ import { init, tick } from "./entry";
 import "settings";
 
 declare global {
-  enum SimultaneousActions {
+  enum Simultaneous_Actions {
     HARVEST = 0,
     ATTACK,
     RANGED_ATTACK,
@@ -21,6 +21,7 @@ declare global {
   }
   interface CreepMemory {
     transfering: boolean;
+    custom_msg?: string;
   }
   interface Memory {
     cpu: unknown;
