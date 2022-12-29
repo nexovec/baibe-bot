@@ -1,4 +1,5 @@
 import * as _ from "lodash";
+import { range } from "lodash";
 import * as names_file from "./creepNames.json";
 // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
 const values = Object.values;
@@ -6,6 +7,7 @@ const entries = Object.entries;
 const keys = Object.keys;
 const assign = Object.assign;
 const log = console.log;
+const LAST_INIT_TIME = Game.time;
 
 const creep_names = values(names_file)[0];
 if (creep_names == undefined) {
@@ -78,7 +80,7 @@ class Creep_Block {
     this.end = null;
   }
 }
-type Depositable = StructureContainer | StructureSpawn | StructureExtension;
+type Depositable = StructureContainer | StructureSpawn | StructureExtension | StructureController;
 type Depositable_ID = Id<Depositable>;
 const creep_blocking: { [id: Id<Creep>]: Creep_Block } = {};
 
@@ -94,6 +96,7 @@ class Basic_Harvesting_Task {
   subject: Id<Creep>;
   block: Creep_Block;
   stage: Harvesting_Stage;
+  amount: number;
 
   constructor(subject: Creep, source: Source, dest: Depositable) {
     this.source = source.id;
@@ -104,25 +107,53 @@ class Basic_Harvesting_Task {
     if (this.subject in creep_blocking) {
       throw Error("Creep" + String(byId(this.subject)?.name) + " is already blocked.");
     }
+    this.amount = subject.body.filter((p) => p.type == CARRY).length * CARRY_CAPACITY;
     const est = this.estimate();
     this.block = new Creep_Block(est);
     creep_blocking[this.subject] = this.block;
   }
-  // estimate_stage(stage: Harvesting_Stage): number {
-  //   switch (stage) {
-  //     case Harvesting_Stage.HARVESTING:
-  //       break;
-  //     case Harvesting_Stage.DEPOSITING:
-  //       break;
-  //     case Harvesting_Stage.WAITING:
-  //       return 0;
-  //     default:
-  //       Error("Unreachable");
-  //   }
-  // }
+  estimate_stage_duration(stage: Harvesting_Stage): number {
+    const creep = (byId(this.subject) as Creep) ?? panic();
+    const source = (byId(this.source) as Source) ?? panic();
+    const dest = (byId(this.dest) as Depositable) ?? panic();
+    switch (stage) {
+      case Harvesting_Stage.APPROACHING:
+        const path_from_dest = PathFinder.search(source.pos, dest.pos);
+        const parking_spot = path_from_dest.path[0] ?? panic();
+        return PathFinder.search(creep.pos, parking_spot).cost;
+      case Harvesting_Stage.HARVESTING:
+        const capacity = creep.body.map((t) => t.type).filter((t) => t == CARRY).length * CARRY_CAPACITY;
+        const speed = creep.body.map((t) => t.type).filter((t) => t == WORK).length * HARVEST_POWER;
+        return Math.ceil(capacity / speed);
+      case Harvesting_Stage.DEPOSITING:
+        const travel_cost = PathFinder.search(dest.pos, source.pos).cost;
+        return travel_cost;
+      case Harvesting_Stage.WAITING:
+        return 0;
+      default:
+        Error("Unreachable");
+    }
+    return -1;
+  }
+  estimate_stage_end(stage: Harvesting_Stage): number {
+    let total = 0;
+    switch (this.stage) {
+      case Harvesting_Stage.APPROACHING:
+        total += this.estimate_stage_duration(Harvesting_Stage.APPROACHING);
+      case Harvesting_Stage.HARVESTING:
+        total += this.estimate_stage_duration(Harvesting_Stage.HARVESTING);
+      case Harvesting_Stage.DEPOSITING:
+        total += this.estimate_stage_duration(Harvesting_Stage.DEPOSITING);
+      case Harvesting_Stage.WAITING:
+        console.log("You shouldn't wait, really");
+        break;
+      default:
+        Unreachable();
+    }
+    return total;
+  }
   // returns expected number of ticks to finish the job
   estimate(): number {
-    // stub
     return 0;
   }
   estimate_old(): number {
@@ -209,7 +240,10 @@ class Basic_Harvesting_Task {
         Unexpected_Screeps_Return(result);
       }
     } else if (this.stage === Harvesting_Stage.DEPOSITING) {
-      const result = creep.transfer(dest, RESOURCE_ENERGY);
+      let result = creep.transfer(dest, RESOURCE_ENERGY);
+      if (result == ERR_INVALID_TARGET) {
+        result = creep.upgradeController(dest as StructureController);
+      }
       if (result == OK) {
         this.stage = Harvesting_Stage.HARVESTING; // TODO: replace
       } else if (result === ERR_NOT_IN_RANGE) {
@@ -227,17 +261,84 @@ class Basic_Harvesting_Task {
     }
   }
 }
+const MAXIMUM_STORED_FOR_BONUS = 300;
+const BONUS_AMOUNT = 1;
+class Spawn_Energy_Amount_Predictor {
+  spawn: Id<StructureSpawn>;
+  capacity = 300;
+  predicted_income: { [time: number]: number } = {};
+  actual_income: { [time: number]: number } = {};
+  predicted_spending: { [time: number]: number } = {};
+  actual_spending: { [time: number]: number } = {};
+  constructor(spawn: StructureSpawn) {
+    this.spawn = spawn.id;
+  }
+  // returns the tick when balance is above amount BEFORE the tick
+  predict_above(amount: number, after?: number): number | null {
+    // FIXME: is returning 1 more than it's supposed to
+    const MAXIMUM_LOOKAHEAD = 1000;
+    let start = Game.time;
+    if (after) {
+      console.log("this is happening");
+      start = after + 1;
+    }
+    for (let i = start + 1; i < start + MAXIMUM_LOOKAHEAD; i++) {
+      if (this.prediction_before(i) >= amount) {
+        return i - 1;
+      }
+    }
+    return null;
+  }
+  // ticks are the actual tick you're asking for, not a delta from this tick.
+  prediction_before(tick: number) {
+    const income_amount = 0;
+    const spending_amount = 0;
+    let balance = (byId(this.spawn) ?? panic()).store.energy;
+    for (let i = Game.time; i < tick; i++) {
+      const income_at_i = _.sum(
+        entries(this.predicted_income)
+          .filter(([val, key]) => key == i)
+          .map(([val, key]) => val)
+      );
+      const spending_at_i = _.sum(
+        entries(this.predicted_spending)
+          .filter(([val, key]) => key == i)
+          .map(([val, key]) => val)
+      );
+      // ordering of these is unclear, so I assume you get bonus the last
+      balance -= spending_at_i;
+      balance += income_at_i;
+      if (balance < MAXIMUM_STORED_FOR_BONUS) {
+        balance += BONUS_AMOUNT;
+      }
+      if (balance > this.capacity) {
+        balance = this.capacity;
+      }
+    }
+    return balance;
+  }
+  payment_incoming(tick: number, amount: number) {
+    this.predicted_income[tick] += amount;
+  }
+  payment_outgoing(tick: number, amount: number) {
+    this.predicted_spending[tick] += amount;
+  }
+}
 const creeps_harvesting: { [id: Id<Creep>]: Basic_Harvesting_Task } = {};
+const spawn_predictors: { [id: Id<StructureSpawn>]: Spawn_Energy_Amount_Predictor } = {};
+
+const first_spawn = Game.spawns.Spawn1;
+spawn_predictors[first_spawn.id] = new Spawn_Energy_Amount_Predictor(first_spawn);
+
 function tick(): void {
   // spawn the biggest harvesters you can.
   const creeps = Game.creeps;
   const POPULATION_CAP = 7;
-  for (const spawn of values(Game.spawns)) {
-    // console.log(spawn.toString());
-    const universal_worker_parts: BodyPartConstant[] = [WORK, CARRY, MOVE];
-    function compute_body_cost(parts: BodyPartConstant[]): number {
-      return parts.reduce((cumulant: number, part: BodyPartConstant) => cumulant + BODYPART_COST[part], 0);
-    }
+  function compute_body_cost(parts: BodyPartConstant[]): number {
+    return parts.reduce((cumulant: number, part: BodyPartConstant) => cumulant + BODYPART_COST[part], 0);
+  }
+  function largest_available_harvester_body(spawn: StructureSpawn) {
+    const universal_worker_parts: BodyPartConstant[] = [WORK, CARRY, CARRY, MOVE, MOVE];
     const count = Math.floor(
       (spawn.store.getFreeCapacity(RESOURCE_ENERGY) + spawn.store.getUsedCapacity(RESOURCE_ENERGY)) /
         compute_body_cost(universal_worker_parts)
@@ -245,18 +346,21 @@ function tick(): void {
     const largest_produceable_worker: BodyPartConstant[] = _.flatten(
       _.times(count, _.constant(universal_worker_parts))
     );
-    // console.log("there are " + values(creeps).length.toString() + " creeps");
-    if (values(creeps).length >= POPULATION_CAP) {
-      break;
-    }
-    if (spawn.spawning) {
-      continue;
-    }
-    const creep_name = assemble_creep_name();
-    const spawn_result = spawn.spawnCreep(largest_produceable_worker, creep_name);
-    if (spawn_result === OK) {
-      console.log("creep name: " + creep_name);
-    }
+    return largest_produceable_worker;
+  }
+  const spawn = Game.spawns.Spawn1 ?? panic();
+  // assert(first_spawn.id === spawn.id);
+  const spawn_predictor = spawn_predictors[spawn.id];
+  const desired = largest_available_harvester_body(spawn);
+  const cost = compute_body_cost(desired);
+  const available_at = spawn_predictor.predict_above(cost);
+  if (available_at === null) {
+    panic("You can never make it, too bad");
+  } else if (available_at <= Game.time && !spawn.spawning && values(creeps).length < POPULATION_CAP) {
+    console.log("spawning in");
+    spawn.spawnCreep(desired, assemble_creep_name());
+  } else {
+    log("Creep should spawn in " + (available_at - Game.time).toString() + " ticks");
   }
 
   const idle_creeps: Creep[] = values(creeps).filter((creep) => !(creep.id in creep_blocking) && !creep.spawning);
@@ -290,11 +394,19 @@ function tick(): void {
     if (creep_availability.can_do_basic_harvesting && harvester_count < FIXED_MAX_HARVESTERS) {
       const sample_destination = Game.spawns["Spawn1"] ?? panic();
       const sample_source = sample_destination.room.find(FIND_SOURCES)[0] ?? panic();
-      creeps_harvesting[creep.id] = new Basic_Harvesting_Task(creep, sample_source, sample_destination);
-    }
+      let task = new Basic_Harvesting_Task(creep, sample_source, sample_destination);
 
-    // upgrade
-    if (creep_availability.can_upgrade) {
+      const predicted_arrival = task.estimate_stage_end(Harvesting_Stage.DEPOSITING);
+      const predictor = spawn_predictors[task.dest as Id<StructureSpawn>] ?? panic();
+      const prediction_on_arrival = predictor.prediction_before(predicted_arrival);
+      if (prediction_on_arrival === spawn.store.getCapacity(RESOURCE_ENERGY)) {
+        const controller = spawn.room.controller ?? panic();
+        delete creep_blocking[creep.id];
+        task = new Basic_Harvesting_Task(creep, sample_source, controller);
+      } else {
+        predictor.payment_incoming(predicted_arrival, task.amount);
+      }
+      creeps_harvesting[creep.id] = task;
     }
   }
   values(creeps_harvesting).forEach((task) => {
