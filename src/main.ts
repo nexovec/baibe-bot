@@ -1,7 +1,7 @@
 import ErrorMapper from "utils/ErrorMapper";
 import { init, tick } from "./new_entry";
 import "settings";
-
+console.log("RUNNING");
 declare global {
   enum Simultaneous_Actions {
     HARVEST = 0,
