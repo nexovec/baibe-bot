@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "module": "esnext",
-    "lib": ["esnext"],
+    "lib": ["esnext","ES7"],
     "target": "es2017",
     "moduleResolution": "Node",
     "outDir": "dist",
@@ -10,10 +10,12 @@
     "strict": true,
     "experimentalDecorators": true,
     "noImplicitReturns": true,
+    "noImplicitAny": true,
     "allowSyntheticDefaultImports": true,
     "allowUnreachableCode": false,
     "resolveJsonModule": true,
     "esModuleInterop": true,
+    "strictNullChecks": true
   },
   "exclude": [
     "node_modules"

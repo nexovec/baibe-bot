@@ -20,6 +20,17 @@ function assert(thing: unknown) {
     throw Error("assert");
   }
 }
+const panic = (x?: string): never => {
+  throw Error(x);
+};
+const Not_Implemented = () => panic("Not yet implemented");
+const Unreachable = () => panic("Unreachable");
+const Unexpected_Screeps_Return = (result: ScreepsReturnCode) =>
+  Error("Unexpected intent result: " + result.toString());
+function byId<T extends _HasId>(id: Id<T> | undefined) {
+  return id ? Game.getObjectById(id) ?? undefined : undefined;
+}
+
 // excludes the upper bound
 function rand_int(): number;
 function rand_int(end: number): number;
@@ -72,9 +83,10 @@ type Depositable_ID = Id<Depositable>;
 const creep_blocking: { [id: Id<Creep>]: Creep_Block } = {};
 
 enum Harvesting_Stage {
-  DEPOSITING = "depositing",
+  APPROACHING = "approaching",
+  HARVESTING = "harvesting",
   WAITING = "waiting",
-  HARVESTING = "harvesting"
+  DEPOSITING = "depositing"
 }
 class Basic_Harvesting_Task {
   source: Id<Source>;
@@ -88,46 +100,61 @@ class Basic_Harvesting_Task {
     this.dest = dest.id;
     this.subject = subject.id;
     this.stage = Harvesting_Stage.HARVESTING;
-    console.log("Creep" + String(Game.getObjectById(this.subject)?.name) + "is now a harvester");
+    console.log("Creep" + String(byId(this.subject)?.name) + "is now a harvester");
     if (this.subject in creep_blocking) {
-      throw Error("Creep" + String(Game.getObjectById(this.subject)?.name) + " is already blocked.");
+      throw Error("Creep" + String(byId(this.subject)?.name) + " is already blocked.");
     }
     const est = this.estimate();
     this.block = new Creep_Block(est);
     creep_blocking[this.subject] = this.block;
   }
+  // estimate_stage(stage: Harvesting_Stage): number {
+  //   switch (stage) {
+  //     case Harvesting_Stage.HARVESTING:
+  //       break;
+  //     case Harvesting_Stage.DEPOSITING:
+  //       break;
+  //     case Harvesting_Stage.WAITING:
+  //       return 0;
+  //     default:
+  //       Error("Unreachable");
+  //   }
+  // }
   // returns expected number of ticks to finish the job
   estimate(): number {
+    // stub
+    return 0;
+  }
+  estimate_old(): number {
     if (this.stage !== Harvesting_Stage.HARVESTING) {
-      throw Error("Not implemented.");
+      Not_Implemented();
     }
-    const creep = Game.getObjectById(this.subject);
-    const source = Game.getObjectById(this.source);
-    const dest = Game.getObjectById(this.dest);
-    if (creep == null) {
-      throw Error("creep in a harvesting task is not there.");
+    const creep = (byId(this.subject) as Creep) ?? panic();
+    const source = (byId(this.source) as Source) ?? panic();
+    const dest = (byId(this.dest) as Depositable) ?? panic();
+    const ttl =
+      (creep.ticksToLive as number) ?? panic("creep doesn't have ticks to live, that means it has despawned.");
+    const path_source_parking = PathFinder.search(source.pos, dest.pos);
+
+    {
+      const l = path_source_parking.path.length;
+      (path_source_parking.path[l] ?? undefined) == undefined ? OK : panic("path from a to b contains both a and b");
+      path_source_parking.path[0].x === source.pos.x && path_source_parking.path[0].y === source.pos.y
+        ? OK
+        : panic("path from a to b contains a");
+      path_source_parking.path[l - 1].x === source.pos.x && path_source_parking.path[l - 1].y === source.pos.y
+        ? OK
+        : panic("path from a to b contains b");
     }
-    if (source == null) {
-      throw Error("source subject to a harvesting task is not there.");
-    }
-    if (dest == null) {
-      throw Error("source subject to a harvesting task is not there.");
-    }
-    const ttl = creep.ticksToLive;
-    if (ttl == undefined) {
-      throw Error("creep doesn't have ticks to live, that means it will despawn soon.");
-    }
-    assert(source.pos.x);
-    assert(dest.pos.x);
-    assert(creep.pos.x);
-    const path_source_dest = PathFinder.search(source.pos, dest.pos);
-    const source_post = path_source_dest.path[path_source_dest.path.length - 1];
-    assert(source_post.x);
+
+    const source_post = path_source_parking.path[0] ?? Error(path_source_parking.path.length.toString());
     const path_to_source_now = PathFinder.search(source_post, creep.pos);
     const DYING_DEPOSIT_RESERVE = 2;
-    if (ttl <= path_to_source_now.cost + path_source_dest.cost + DYING_DEPOSIT_RESERVE) {
+    if (ttl <= path_to_source_now.cost + path_source_parking.cost + DYING_DEPOSIT_RESERVE) {
       return 0;
     }
+    this.stage = Harvesting_Stage.WAITING;
+    log("Creep" + String(byId(this.subject)?.name) + "is now a DEPOSITING harvester");
     const HARVEST_SPEED_PER_WORK_PART = 20;
     const num_of_work_parts = creep.body.filter((p) => p.type == WORK).length;
     const num_of_carry_parts = creep.body.filter((p) => p.type == CARRY).length;
@@ -136,48 +163,39 @@ class Basic_Harvesting_Task {
 
     const ticks_to_fill_up = HARVEST_SPEED_PER_WORK_PART * num_of_work_parts;
     const ideal_cycle_time =
-      path_to_source_now.cost +
+      path_to_source_now.cost + // don't add this if you're already at the source or depositing
       Math.ceil(creep.store.getFreeCapacity() / ticks_to_fill_up) +
-      path_source_dest.cost +
+      path_source_parking.cost +
       DYING_DEPOSIT_RESERVE;
     return Math.min(ttl, ideal_cycle_time);
   }
   work() {
-    const creep = Game.getObjectById(this.subject);
-    const source = Game.getObjectById(this.source);
-    const dest = Game.getObjectById(this.dest);
-    if (creep == null) {
-      throw Error("creep in a harvesting task is not there.");
+    const creep = (byId(this.subject) as Creep) ?? undefined;
+    if (creep === undefined) {
+      throw Error("Can't find creep subject to task, you will have to abort the task.");
     }
-    if (source == null) {
-      throw Error("source subject to a harvesting task is not there.");
-    }
-    if (dest == null) {
-      throw Error("source subject to a harvesting task is not there.");
-    }
-    const ttl = creep.ticksToLive;
-    if (ttl == undefined) {
-      throw Error("creep doesn't have ticks to live, I don't know what that means.");
+    const source = (byId(this.source) as Source) ?? panic();
+    const dest = (byId(this.dest) as Depositable) ?? panic();
+    const ttl = (creep.ticksToLive as number) ?? panic();
+    {
+      ttl > 1 ? OK : Error();
     }
 
-    // deposit if ttl not enough
-    assert(source.pos.x);
-    assert(dest.pos.x);
-    assert(creep.pos.x);
-    const path_source_dest = PathFinder.search(source.pos, dest.pos);
-    const path_to_source_now = PathFinder.search(path_source_dest.path[path_source_dest.path.length - 1], creep.pos);
-    if (this.stage == Harvesting_Stage.HARVESTING && this.estimate() > ttl) {
-      log("Creep" + String(Game.getObjectById(this.subject)?.name) + "is now a DEPOSITING harvester");
+    // TODO: handle ttl
+    // deposit if source empty
+    if (source.energy == 0) {
+      log("Creep" + String(byId(this.subject)?.name) + "is now a DEPOSITING harvester");
       this.stage = Harvesting_Stage.DEPOSITING;
     }
     // deposit if full
-    if (creep.store.getFreeCapacity(RESOURCE_ENERGY) == 0) {
-      log("Creep" + String(Game.getObjectById(this.subject)?.name) + "is now a DEPOSITING harvester");
+    creep.store ?? Error();
+    if (this.stage != Harvesting_Stage.DEPOSITING && creep.store.getFreeCapacity(RESOURCE_ENERGY) == 0) {
+      log("Creep" + String(byId(this.subject)?.name) + "is now a DEPOSITING harvester");
       this.stage = Harvesting_Stage.DEPOSITING;
     }
     // wait after depositing
     if (this.stage === Harvesting_Stage.DEPOSITING && creep.store.getUsedCapacity(RESOURCE_ENERGY) == 0) {
-      log("Creep" + String(Game.getObjectById(this.subject)?.name) + "is now a WAITING harvester");
+      log("Creep" + String(byId(this.subject)?.name) + "is now a WAITING harvester");
       this.stage = Harvesting_Stage.WAITING;
     }
 
@@ -188,20 +206,24 @@ class Basic_Harvesting_Task {
       } else if (result === ERR_NOT_IN_RANGE) {
         creep.moveTo(source.pos);
       } else {
-        console.log("creep " + String(creep.name) + " got a harvesting error " + result.toString());
+        Unexpected_Screeps_Return(result);
       }
     } else if (this.stage === Harvesting_Stage.DEPOSITING) {
       const result = creep.transfer(dest, RESOURCE_ENERGY);
       if (result == OK) {
+        this.stage = Harvesting_Stage.HARVESTING; // TODO: replace
       } else if (result === ERR_NOT_IN_RANGE) {
         creep.moveTo(dest.pos);
       } else if (result == ERR_FULL) {
         log("you should redirect creep to another storage");
+        this.stage = Harvesting_Stage.WAITING;
       } else {
         console.log("creep " + String(creep.name) + " got a harvesting error " + result.toString());
       }
     } else if (this.stage === Harvesting_Stage.WAITING) {
-      log("you should disengage creep");
+      // log("you should disengage creep");
+    } else {
+      Unreachable();
     }
   }
 }
@@ -237,7 +259,7 @@ function tick(): void {
     }
   }
 
-  const idle_creeps: Creep[] = values(creeps).filter((creep) => !(creep.id in creep_blocking));
+  const idle_creeps: Creep[] = values(creeps).filter((creep) => !(creep.id in creep_blocking) && !creep.spawning);
 
   // is for one-time use only
   class Creep_Bodypart_Restrictions {
@@ -265,21 +287,26 @@ function tick(): void {
   for (const creep of idle_creeps) {
     console.log("Creep " + creep.name + " is idle");
     const creep_availability = new Creep_Bodypart_Restrictions(creep);
-    if (creep_availability.can_do_basic_harvesting) {
-      if (harvester_count < FIXED_MAX_HARVESTERS) {
-        const sample_destination = Game.spawns["Spawn1"];
-        const sample_source = sample_destination.room.find(FIND_SOURCES)[0];
-        assert(sample_destination.pos.x);
-        assert(sample_source.pos.x);
-        creeps_harvesting[creep.id] = new Basic_Harvesting_Task(creep, sample_source, sample_destination);
-      }
+    if (creep_availability.can_do_basic_harvesting && harvester_count < FIXED_MAX_HARVESTERS) {
+      const sample_destination = Game.spawns["Spawn1"] ?? panic();
+      const sample_source = sample_destination.room.find(FIND_SOURCES)[0] ?? panic();
+      creeps_harvesting[creep.id] = new Basic_Harvesting_Task(creep, sample_source, sample_destination);
     }
 
     // upgrade
     if (creep_availability.can_upgrade) {
     }
   }
-  values(creeps_harvesting).forEach((task) => task.work());
+  values(creeps_harvesting).forEach((task) => {
+    // this function body is for aborting harvesting of incapacitated creeps
+
+    // creep is dead
+    if ((byId(task.subject) ?? undefined) == undefined) {
+      console.log("aborting task for " + task.subject);
+      delete creeps_harvesting[task.subject];
+    }
+    task.work();
+  });
 }
 
 export { init, tick };
