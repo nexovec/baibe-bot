@@ -1,5 +1,5 @@
 import ErrorMapper from "utils/ErrorMapper";
-import { init, tick } from "./entry";
+import { init, tick } from "./new_entry";
 import "settings";
 
 declare global {

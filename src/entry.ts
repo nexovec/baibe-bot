@@ -45,8 +45,6 @@ function rand_int(start?: number, end?: number): number {
   } else if (start == undefined) {
     throw Error();
   }
-  // assert(end == Math.round(end));
-  // assert(start == Math.round(start));
   return Math.floor(Math.random() * end) + start;
 }
 
@@ -145,7 +143,7 @@ class Basic_Harvesting_Task {
       case Harvesting_Stage.DEPOSITING:
         total += this.estimate_stage_duration(Harvesting_Stage.DEPOSITING);
       case Harvesting_Stage.WAITING:
-        console.log("You shouldn't wait, really");
+        // console.log("You shouldn't wait, really");
         break;
       default:
         Unreachable();
@@ -254,10 +252,12 @@ class Basic_Harvesting_Task {
       } else {
         console.log("creep " + String(creep.name) + " got a harvesting error " + result.toString());
       }
-    } else if (this.stage === Harvesting_Stage.WAITING) {
-      // log("you should disengage creep");
     } else {
       Unreachable();
+    }
+    if (this.stage === Harvesting_Stage.WAITING) {
+      log("disengaging creep now");
+      delete creeps_harvesting[this.subject];
     }
   }
 }
@@ -275,7 +275,6 @@ class Spawn_Energy_Amount_Predictor {
   }
   // returns the tick when balance is above amount BEFORE the tick
   predict_above(amount: number, after?: number): number | null {
-    // FIXME: is returning 1 more than it's supposed to
     const MAXIMUM_LOOKAHEAD = 1000;
     let start = Game.time;
     if (after) {
@@ -360,7 +359,7 @@ function tick(): void {
     console.log("spawning in");
     spawn.spawnCreep(desired, assemble_creep_name());
   } else {
-    log("Creep should spawn in " + (available_at - Game.time).toString() + " ticks");
+    // log("Creep should spawn in " + (available_at - Game.time).toString() + " ticks");
   }
 
   const idle_creeps: Creep[] = values(creeps).filter((creep) => !(creep.id in creep_blocking) && !creep.spawning);
