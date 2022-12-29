@@ -1,6 +1,4 @@
-import { spawn } from "child_process";
 import * as _ from "lodash";
-import { range } from "lodash";
 import * as names_file from "./creepNames.json";
 // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
 const values = Object.values;
@@ -9,7 +7,6 @@ const keys = Object.keys;
 const assign = Object.assign;
 const log = console.log;
 const LAST_INIT_TIME = Game.time;
-log("WY U DU DIZ");
 
 const creep_names = values(names_file)[0];
 if (creep_names == undefined) {
@@ -74,6 +71,30 @@ class Simulated_State {
     this.spawn_store = {};
     room.find(FIND_MY_SPAWNS).forEach((spawn) => (this.spawn_store[spawn.id] = spawn.store.energy));
   }
+  copy(): Simulated_State {
+    const state = _.cloneDeep(this);
+    Object.setPrototypeOf(state, Object.getPrototypeOf(this));
+    return state;
+  }
+  get_most_energetic_spawn(): Id<StructureSpawn> {
+    let most_energetic_spawn_id: Id<StructureSpawn> | null = null;
+    for (const key in this.spawn_store) {
+      const id = key as Id<StructureSpawn>;
+      if (!most_energetic_spawn_id || this.spawn_store[id] > this.spawn_store[most_energetic_spawn_id]) {
+        most_energetic_spawn_id = id;
+      }
+    }
+    // failing means there is no spawn
+    return most_energetic_spawn_id ?? panic();
+  }
+  // passes live simulated room state to fn until it returns true
+  until(fn: (room_state: Simulated_State) => boolean): Simulated_State {
+    const rolling_state = this.copy();
+    while (true) {
+      if (fn(rolling_state)) return rolling_state;
+      rolling_state.apply_tick();
+    }
+  }
   verify(): boolean {
     let result = true;
     assert(this.timestamp === Game.time);
@@ -88,9 +109,6 @@ class Simulated_State {
     result = result && creeps.length == values(this.creep_store).length;
     result = result && _.all(creeps.map((creep) => creep.store.energy == this.creep_store[creep.id]));
     return result;
-  }
-  copy(): Simulated_State {
-    return { ...this };
   }
   apply_tick() {
     this.timestamp += 1;
@@ -110,46 +128,41 @@ class Simulated_State {
 type Intent = () => void;
 type Scheduled_Intents = { [time: Tick]: Array<Intent> };
 const scheduled_intents: Scheduled_Intents = {};
+type Intent_Result = ScreepsReturnCode;
+function push_intent(intent: () => Intent_Result, when: Tick) {
+  scheduled_intents[when] = scheduled_intents[when] ?? [];
+  scheduled_intents[when].push(intent);
+}
 function init(): void {
   console.log("-----INITIALIZING-----");
   const room_state = new Simulated_State(Game.spawns.Spawn1.room);
   assert(room_state.verify());
   // only relies on auto-regen of the spawn
-  function spawn_creep_asap() {
-    const demanded_energy = 300;
-    const state = room_state.copy();
-    while (true) {
-      const [highest_id, highest] = entries(state.spawn_store).reduce(
-        ([highest_id, highest_amount], [id, amount], i, arr): [string, number] => {
-          if (amount > highest_amount) {
-            return [id, amount];
-          }
-          return [highest_id, highest_amount];
-        },
-        ["", -Infinity]
+  function spawn_creep_asap(state: Simulated_State): boolean {
+    const DEMANDED_ENERGY = 300;
+    const intent_fn = () =>
+      (Game.getObjectById(most_energetic_spawn_id ?? panic()) as StructureSpawn).spawnCreep(
+        bodypart_list,
+        assemble_creep_name()
       );
-      assert(highest != -Infinity); // that would probably mean there are no spawns in this room
-      const bodypart_list = [WORK, CARRY, MOVE, CARRY, MOVE];
-      if (highest >= demanded_energy) {
-        scheduled_intents[state.timestamp] = scheduled_intents[state.timestamp] ?? [];
-        scheduled_intents[state.timestamp].push(() =>
-          (Game.getObjectById(highest_id as Id<StructureSpawn>) as StructureSpawn).spawnCreep(
-            bodypart_list,
-            assemble_creep_name()
-          )
-        );
-        return;
-      }
-      state.apply_tick();
+    const most_energetic_spawn_id = state.get_most_energetic_spawn();
+    const bodypart_list = [WORK, CARRY, MOVE, CARRY, MOVE];
+    if (state.spawn_store[most_energetic_spawn_id ?? panic()] >= DEMANDED_ENERGY) {
+      push_intent(intent_fn, state.timestamp);
+      return true;
     }
+    return false;
+  }
+  function send_spawning_creeps_to_harvest(state: Simulated_State) {
+    return true;
   }
   // my aim is to produce 7 harvesters and put them to work
   // this should predict when the last one gets produced
-  spawn_creep_asap();
-  spawn_creep_asap();
+  const state_after_spawn = room_state.until(spawn_creep_asap);
+  const state_after_starting_harvest = state_after_spawn.until(send_spawning_creeps_to_harvest);
+  const state_after_spawn_2 = spawn_creep_asap(state_after_starting_harvest);
 }
 function tick() {
-  //   console.log("wtf");
   const intents_to_run = scheduled_intents[Game.time] ?? [];
   values(intents_to_run).forEach((i) => i());
 }
