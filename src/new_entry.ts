@@ -92,12 +92,12 @@ function tick(): void {
       if (spawn.store.energy < cost) {
         return;
       }
-      const needed_harvesters = get_ideal_harvester_count(room, body);
+      const needed_harvesters = get_ideal_harvester_count(room, BASIC_HARVESTER_BODY);
       // log(needed_harvesters.toString() + " harvesters needed");
       if (values(Game.creeps).length >= needed_harvesters) {
         return;
       }
-      const result = spawn.spawnCreep(body, assemble_creep_name());
+      const result = spawn.spawnCreep(BASIC_HARVESTER_BODY, assemble_creep_name());
       if (result != OK) {
         console.log("couldn't spawn harvester: " + result.toString());
       }
@@ -110,7 +110,7 @@ function tick(): void {
       const source_now = harvesting_creeps[creep.id];
       delete harvesting_creeps[creep.id];
       const available_sources = sources.filter((source) => {
-        const ideal = get_ideal_harvester_count_of_source(room, source, body);
+        const ideal = get_ideal_harvester_count_of_source(room, source, BASIC_HARVESTER_BODY);
         const actual = count_harvesters_assigned_to_source(source);
         // console.log("source ideally wants " + ideal.toString() + " harvesters, but only has " + actual.toString());
         return ideal > actual;
@@ -124,14 +124,15 @@ function tick(): void {
       const sorted = _.sortBy(
         available_sources,
         (source) =>
-          get_ideal_harvester_count_of_source(room, source, body) - count_harvesters_assigned_to_source(source)
+          get_ideal_harvester_count_of_source(room, source, BASIC_HARVESTER_BODY) -
+          count_harvesters_assigned_to_source(source)
       );
       let top = "0";
       for (const i in sorted) {
         const source = sorted[i];
         if (
-          get_ideal_harvester_count_of_source(room, source, body) !=
-          get_ideal_harvester_count_of_source(room, sorted[0], body)
+          get_ideal_harvester_count_of_source(room, source, BASIC_HARVESTER_BODY) !=
+          get_ideal_harvester_count_of_source(room, sorted[0], BASIC_HARVESTER_BODY)
         ) {
           break;
         }
