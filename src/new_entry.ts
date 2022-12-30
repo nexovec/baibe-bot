@@ -3,6 +3,7 @@ import { assemble_creep_name, assert, byId, log, panic, values } from "utilities
 import { profile } from "./profiler";
 import { surroundingPoints } from "./weight-min-cut";
 import { keys, slice } from "lodash";
+import { spawn } from "child_process";
 // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
 
 type Tick = number;
@@ -13,6 +14,9 @@ function init(): void {
 type Depositable = StructureSpawn | StructureController | StructureExtension;
 const harvesting_creeps: { [id: Id<Creep>]: Id<Source> } = {};
 const creeps_depositing: { [id: Id<Creep>]: Id<Depositable> } = {};
+function get_body_cost(body: BodyPartConstant[]): number {
+  return _.sum(body.map((part) => BODYPART_COST[part]));
+}
 function get_ideal_harvester_count_of_source(room: Room, source: Source, body: BodyPartConstant[]) {
   const spots = surroundingPoints(source.pos);
   const parkable_spots = spots.filter((spot) => {
@@ -22,7 +26,7 @@ function get_ideal_harvester_count_of_source(room: Room, source: Source, body: B
   const work_part_count = body.filter((part) => part === WORK).length;
   const carry_part_count = body.filter((part) => part === CARRY).length;
   const controller = source.room.controller ?? panic();
-  const path_cost = PathFinder.search(source.pos, controller.pos).cost;
+  const path_cost = PathFinder.search(source.pos, { pos: controller.pos, range: 1 }).cost;
   // loss is in energy units
   // FIXME: not accounting for the away loss of the extra creeps
   const loss_to_away_from_source = path_cost * work_part_count * parkable_spots.length * HARVEST_POWER * 2;
@@ -38,6 +42,8 @@ function get_ideal_harvester_count(room: Room, body: BodyPartConstant[]) {
 function count_harvesters_assigned_to_source(source: Source) {
   return values(harvesting_creeps).filter((s) => s == source.id).length;
 }
+
+const BASIC_HARVESTER_BODY = [WORK, CARRY, MOVE];
 
 function tick(): void {
   const rooms_with_spawns = _.uniq(values(Game.spawns).map((spawn) => spawn.room));
@@ -78,9 +84,8 @@ function tick(): void {
     }
     // spawning
     const spawns = room.find(FIND_MY_SPAWNS);
-    const body = [WORK, CARRY, MOVE];
     spawns.forEach((spawn) => {
-      const cost = _.sum(body.map((part) => BODYPART_COST[part]));
+      const cost = get_body_cost(BASIC_HARVESTER_BODY);
       if (spawn.spawning) {
         return;
       }
@@ -172,7 +177,7 @@ function tick(): void {
         room.controller ??
         panic();
 
-      const path_to_deposit = PathFinder.search(creep.pos, assigned_depositable.pos);
+      const path_to_deposit = PathFinder.search(creep.pos, { pos: assigned_depositable.pos, range: 1 });
       const travel_cost = path_to_deposit.cost;
       const creep_dying = travel_cost >= ttl;
       // move to deposit, creep is dying
@@ -190,6 +195,21 @@ function tick(): void {
       // harvesting phase exit condition
       if (creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0) {
         creeps_depositing[creep_id] = assigned_depositable.id;
+      }
+      if (values(Game.creeps).length == 1) {
+        const creep = values(Game.creeps)[0];
+        const LOWER_ASSISTANCE_AMOUNT_LIMIT = 20;
+        const demanded: number = get_body_cost(BASIC_HARVESTER_BODY);
+        const closest_spawn =
+          _.sortBy(room.find(FIND_MY_SPAWNS), (spawn) =>
+            PathFinder.search(creep.pos, { pos: spawn.pos, range: 1 })
+          )[0] ?? panic();
+        const spawn_e = closest_spawn.store.getUsedCapacity(RESOURCE_ENERGY);
+        const creep_e = creep.store.getUsedCapacity(RESOURCE_ENERGY);
+        const can_assist_spawning =
+          creep.store.energy > LOWER_ASSISTANCE_AMOUNT_LIMIT &&
+          PathFinder.search(creep.pos, { pos: closest_spawn.pos, range: 1 }).cost + spawn_e + creep_e >= demanded;
+        if (can_assist_spawning) creeps_depositing[creep.id] = closest_spawn.id;
       }
       // depositing phase exit condition
       if (creeps_depositing[creep_id] && creep.store.getUsedCapacity(RESOURCE_ENERGY) == 0 && !creep_dying) {
