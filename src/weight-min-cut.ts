@@ -105,7 +105,7 @@ function pointAdd(a: Point, b: Point): Point {
   return { x: a.x + b.x, y: a.y + b.y };
 }
 
-function surroundingPoints(p: Point): Point[] {
+export function surroundingPoints(p: Point): Point[] {
   return EIGHT_DELTA.map((d) => pointAdd(p, d)).filter(isPointInRoom);
 }
 
@@ -459,40 +459,40 @@ export function minCutToExit(sources: Point[], costMap: CostMatrix): Point[] {
 
   return ret;
 }
-function USAGE() {
-  // const assert = require("assert");
+// function USAGE() {
+//   // const assert = require("assert");
 
-  const cm = new PathFinder.CostMatrix();
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
-  (cm as any)._bits.fill(255);
+//   const cm = new PathFinder.CostMatrix();
+//   // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
+//   (cm as any)._bits.fill(255);
 
-  cm.set(5, 0, 1);
-  for (let y = 1; y < 10; ++y) {
-    for (let x = 1; x < 10; ++x) {
-      cm.set(x, y, 1);
-    }
-  }
+//   cm.set(5, 0, 1);
+//   for (let y = 1; y < 10; ++y) {
+//     for (let x = 1; x < 10; ++x) {
+//       cm.set(x, y, 1);
+//     }
+//   }
 
-  const expected = [
-    { x: 3, y: 1 },
-    { x: 7, y: 1 },
-    { x: 3, y: 2 },
-    { x: 4, y: 2 },
-    { x: 5, y: 2 },
-    { x: 6, y: 2 },
-    { x: 7, y: 2 }
-  ];
+//   const expected = [
+//     { x: 3, y: 1 },
+//     { x: 7, y: 1 },
+//     { x: 3, y: 2 },
+//     { x: 4, y: 2 },
+//     { x: 5, y: 2 },
+//     { x: 6, y: 2 },
+//     { x: 7, y: 2 }
+//   ];
 
-  const result = minCutToExit(surroundingPoints({ x: 5, y: 5 }), cm);
+//   const result = minCutToExit(surroundingPoints({ x: 5, y: 5 }), cm);
 
-  result.sort((a, b) => {
-    if (a.y != b.y) {
-      return a.y - b.y;
-    }
-    return a.x - b.x;
-  });
-  deepStrictEqual(result, expected);
-  console.log("Yes!");
-}
+//   result.sort((a, b) => {
+//     if (a.y != b.y) {
+//       return a.y - b.y;
+//     }
+//     return a.x - b.x;
+//   });
+//   deepStrictEqual(result, expected);
+//   console.log("Yes!");
+// }
 
-USAGE();
+// USAGE();
