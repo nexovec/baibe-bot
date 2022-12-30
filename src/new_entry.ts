@@ -1,50 +1,10 @@
 import * as _ from "lodash";
-import { panic } from "utilities";
-import * as names_file from "./creepNames.json";
+import { assemble_creep_name, assert, byId, log, panic, values } from "utilities";
+import { profile } from "./profiler";
 import { surroundingPoints } from "./weight-min-cut";
+import { keys, slice } from "lodash";
 // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-const values = Object.values;
-const entries = Object.entries;
-const keys = Object.keys;
-const assign = Object.assign;
-const log = console.log;
-const LAST_INIT_TIME = Game.time;
 
-const creep_names = values(names_file)[0];
-if (creep_names == undefined) {
-  throw Error();
-}
-
-const Not_Implemented = () => panic("Not yet implemented");
-const Unreachable = () => panic("Unreachable");
-const Unexpected_Screeps_Return = (result: ScreepsReturnCode) =>
-  Error("Unexpected intent result: " + result.toString());
-function byId<T extends _HasId>(id: Id<T> | undefined) {
-  return id ? Game.getObjectById(id) ?? undefined : undefined;
-}
-
-// excludes the upper bound
-function rand_int(): number;
-function rand_int(end: number): number;
-function rand_int(start: number, end: number): number;
-function rand_int(start?: number, end?: number): number {
-  if (end == undefined && start == undefined) {
-    return rand_int(0, Number.MAX_SAFE_INTEGER);
-  } else if (end == undefined) {
-    return rand_int(0, start as number);
-  } else if (start == undefined) {
-    throw Error();
-  }
-  return Math.floor(Math.random() * end) + start;
-}
-
-function assemble_creep_name(): string {
-  const [first_names, last_names] = creep_names;
-  const first_i = rand_int(first_names.length - 1);
-  const second_i = rand_int(last_names.length - 1);
-  const postfix = rand_int(99);
-  return first_names[first_i] + " " + last_names[second_i] + postfix.toString();
-}
 type Tick = number;
 function init(): void {
   console.log("-----INITIALIZING-----");
@@ -53,13 +13,73 @@ function init(): void {
 type Depositable = StructureSpawn | StructureController | StructureExtension;
 const harvesting_creeps: { [id: Id<Creep>]: Id<Source> } = {};
 const creeps_depositing: { [id: Id<Creep>]: Id<Depositable> } = {};
-function tick() {
+function get_ideal_harvester_count_of_source(room: Room, source: Source, body: BodyPartConstant[]) {
+  const spots = surroundingPoints(source.pos);
+  const parkable_spots = spots.filter((spot) => {
+    const terrain = room.getTerrain().get(spot.x, spot.y);
+    return terrain != TERRAIN_MASK_WALL;
+  });
+  const work_part_count = body.filter((part) => part === WORK).length;
+  const carry_part_count = body.filter((part) => part === CARRY).length;
+  const controller = source.room.controller ?? panic();
+  const path_cost = PathFinder.search(source.pos, controller.pos).cost;
+  // loss is in energy units
+  // FIXME: not accounting for the away loss of the extra creeps
+  const loss_to_away_from_source = path_cost * work_part_count * parkable_spots.length * HARVEST_POWER * 2;
+  const needed_extra = Math.ceil(loss_to_away_from_source / (carry_part_count * CARRY_CAPACITY * HARVEST_POWER));
+  // TODO: limit based on how fast they can outharvest the source regeneration
+  return parkable_spots.length + needed_extra;
+}
+function get_ideal_harvester_count(room: Room, body: BodyPartConstant[]) {
+  const sources = room.find(FIND_SOURCES);
+  const parkable_spots = sources.map((source) => get_ideal_harvester_count_of_source(room, source, body));
+  return _.sum(parkable_spots);
+}
+function count_harvesters_assigned_to_source(source: Source) {
+  return values(harvesting_creeps).filter((s) => s == source.id).length;
+}
+
+function tick(): void {
   const rooms_with_spawns = _.uniq(values(Game.spawns).map((spawn) => spawn.room));
   rooms_with_spawns.forEach((room: Room) => {
+    // constructing
+    const controller = room.controller;
+    if (controller === undefined) return;
+    if (controller.level >= 1) {
+      const roads: RoomPosition[] = [];
+      room.find(FIND_SOURCES).forEach((source) => {
+        room.find(FIND_MY_SPAWNS).forEach((spawn) => {
+          const path = PathFinder.search(
+            spawn.pos,
+            { pos: source.pos, range: 1 },
+            { maxRooms: 1, plainCost: 1, swampCost: 1 }
+          );
+          if (path.incomplete) return;
+          roads.push(...path.path);
+        });
+        const path = PathFinder.search(
+          controller.pos,
+          { pos: source.pos, range: 1 },
+          { maxRooms: 1, plainCost: 1, swampCost: 1 }
+        );
+        if (path.incomplete) return;
+        roads.push(...path.path);
+      });
+      roads.forEach((point) => {
+        const result = room.createConstructionSite(point.x, point.y, STRUCTURE_ROAD);
+        if (result == OK) {
+          console.log("placing road at x:" + String(point.x) + ", y:" + String(point.y));
+        } else if (result != ERR_INVALID_TARGET) {
+          console.log("construction placement error: " + result.toString());
+        }
+      });
+    } else {
+      console.log("not enough level");
+    }
     // spawning
     const spawns = room.find(FIND_MY_SPAWNS);
+    const body = [WORK, CARRY, MOVE];
     spawns.forEach((spawn) => {
-      const body = [WORK, CARRY, MOVE];
       const cost = _.sum(body.map((part) => BODYPART_COST[part]));
       if (spawn.spawning) {
         return;
@@ -67,21 +87,8 @@ function tick() {
       if (spawn.store.energy < cost) {
         return;
       }
-      function get_ideal_harvester_count(sources: Source[], body: BodyPartConstant[]) {
-        const parkable_spots = sources.map((source) => {
-          const spots = surroundingPoints(source.pos);
-          const parkable_spots = spots.filter((spot) => {
-            const terrain = room.getTerrain().get(spot.x, spot.y);
-            return terrain != TERRAIN_MASK_WALL;
-          });
-          const work_part_count = body.filter((part) => part === WORK).length;
-          // TODO: limit based on how fast they can outharvest the source regeneration
-          return parkable_spots.length;
-        });
-        return _.sum(parkable_spots);
-      }
-      const needed_harvesters = get_ideal_harvester_count(room.find(FIND_SOURCES), body);
-      log(needed_harvesters.toString() + " harvesters needed");
+      const needed_harvesters = get_ideal_harvester_count(room, body);
+      // log(needed_harvesters.toString() + " harvesters needed");
       if (values(Game.creeps).length >= needed_harvesters) {
         return;
       }
@@ -93,18 +100,54 @@ function tick() {
     const idle_creeps = values(Game.creeps).filter((creep) => {
       return !creep.spawning && !harvesting_creeps[creep.id];
     });
-    function pick_suitable_harvesting_source(creep: Creep) {
+    function pick_suitable_harvesting_source(creep: Creep): Source | null {
       const sources = room.find(FIND_SOURCES);
-      const source_to_deposit_paths = sources.map((source) =>
-        PathFinder.search(source.pos, room.controller?.pos ?? panic())
+      const source_now = harvesting_creeps[creep.id];
+      delete harvesting_creeps[creep.id];
+      const available_sources = sources.filter((source) => {
+        const ideal = get_ideal_harvester_count_of_source(room, source, body);
+        const actual = count_harvesters_assigned_to_source(source);
+        // console.log("source ideally wants " + ideal.toString() + " harvesters, but only has " + actual.toString());
+        return ideal > actual;
+      });
+      if (available_sources.length == 0) {
+        // this shouldn't ever happen
+        log(creep.name + " can not harvest");
+        return null;
+      }
+      assert(available_sources.length > 0);
+      const sorted = _.sortBy(
+        available_sources,
+        (source) =>
+          get_ideal_harvester_count_of_source(room, source, body) - count_harvesters_assigned_to_source(source)
       );
-      const smallest_cost = _.min(source_to_deposit_paths.map((p) => p.cost));
-      const index = source_to_deposit_paths.findIndex((source) => source.cost == smallest_cost);
-      return sources[index];
+      let top = "0";
+      for (const i in sorted) {
+        const source = sorted[i];
+        if (
+          get_ideal_harvester_count_of_source(room, source, body) !=
+          get_ideal_harvester_count_of_source(room, sorted[0], body)
+        ) {
+          break;
+        }
+        top = i;
+      }
+      harvesting_creeps[creep.id] = source_now;
+      const n = parseInt(top);
+      const finalists = slice(sorted, 0, n + 1);
+      // picks at random from sources with the same amount of creeps missing
+      // TODO: prioritize sources that will have no possible congestion at their parking spots first
+      // TODO: prioritize distance to controller second
+      return finalists[_.random(0, n)];
     }
     idle_creeps.forEach((creep) => {
-      console.log("making creep harvest stuff: " + creep.name);
-      harvesting_creeps[creep.id] = pick_suitable_harvesting_source(creep).id;
+      // console.log("making creep harvest stuff: " + creep.name);
+      const source = pick_suitable_harvesting_source(creep);
+      if (source === null) {
+        return;
+      }
+      // console.log(source.id);
+      harvesting_creeps[creep.id] = source.id;
     });
 
     // removing dead creeps
@@ -134,14 +177,14 @@ function tick() {
       const creep_dying = travel_cost >= ttl;
       // move to deposit, creep is dying
       if (creep_dying) {
-        console.log(
-          "creep " +
-            creep.name +
-            " is dying, ttl is " +
-            ttl.toString() +
-            " while travel cost to deposit is " +
-            travel_cost.toString()
-        );
+        // console.log(
+        //   "creep " +
+        //     creep.name +
+        //     " is dying, ttl is " +
+        //     ttl.toString() +
+        //     " while travel cost to deposit is " +
+        //     travel_cost.toString()
+        // );
         creeps_depositing[creep_id] = assigned_depositable.id;
       }
       // harvesting phase exit condition
@@ -151,24 +194,39 @@ function tick() {
       // depositing phase exit condition
       if (creeps_depositing[creep_id] && creep.store.getUsedCapacity(RESOURCE_ENERGY) == 0 && !creep_dying) {
         delete creeps_depositing[creep_id];
+        const source = pick_suitable_harvesting_source(creep);
+        if (!source) {
+          console.log("this creep is not needed anymore, but that's weird");
+          delete harvesting_creeps[creep_id];
+          delete creeps_depositing[creep_id];
+          return;
+        }
       }
+      // else {
+      //   const available = pick_suitable_harvesting_source(creep);
+      //   const actual = harvesting_creeps[creep_id];
+      // }
 
       // creep is dead
-      if (ttl <= 1) {
+      if (ttl <= 0) {
         // TODO: test for 0
         delete harvesting_creeps[creep_id];
       }
 
       // intents
-      const assigned_source = pick_suitable_harvesting_source(creep);
+      const assigned_source = byId(harvesting_creeps[creep.id]) ?? panic();
+      // console.log(assigned_source);
       if (creeps_depositing[creep_id]) {
         const result =
           assigned_depositable.structureType == STRUCTURE_CONTROLLER
             ? creep.upgradeController(assigned_depositable)
             : creep.transfer(assigned_depositable, RESOURCE_ENERGY);
-        if (result == ERR_NOT_IN_RANGE) {
+        if (result == OK) {
+          delete harvesting_creeps[creep_id];
+          delete creeps_depositing[creep_id];
+        } else if (result == ERR_NOT_IN_RANGE) {
           creep.moveTo(assigned_depositable);
-        } else if (result != OK) {
+        } else {
           console.log("unhandled depositing error: " + result.toString());
         }
       } else {

@@ -1,4 +1,5 @@
 import ErrorMapper from "utils/ErrorMapper";
+import * as Profiler from "./profiler";
 import { init, tick } from "./new_entry";
 import "settings";
 declare global {
@@ -23,7 +24,7 @@ declare global {
   }
   interface Memory {
     cpu: unknown;
-    profiler: unknown;
+    profiler: ProfilerMemory;
   }
 }
 
@@ -65,6 +66,8 @@ interface custom_fns extends NodeJS.Global {
   suspend?: () => boolean;
   genocide?: () => string;
   reset_profiler?: () => string;
+  cancel_structures?: () => void;
+  profiler?: Profiler;
 }
 const custom_global: custom_fns = global;
 custom_global.suspend = function (): boolean {
@@ -78,12 +81,17 @@ custom_global.genocide = function (): string {
   return "All creeps have been killed!";
 };
 custom_global.reset_profiler = function (): string {
-  Memory.profiler = {};
+  // Memory.profiler = {};
   Memory.cpu = {
     history: [],
     average: 0
   };
   return "success";
 };
+
+custom_global.cancel_structures = function (): void {
+  Object.values(Game.rooms).forEach((room) => room.find(FIND_CONSTRUCTION_SITES).forEach((site) => site.remove()));
+};
+custom_global.profiler = Profiler.init();
 
 export { loop, unwrappedLoop };
