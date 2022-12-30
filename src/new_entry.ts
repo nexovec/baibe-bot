@@ -55,115 +55,97 @@ function assemble_creep_name(): string {
   return first_names[first_i] + " " + last_names[second_i] + postfix.toString();
 }
 type Tick = number;
-class Simulated_State {
-  timestamp: Tick;
-  sources_store: { [source: Id<Source>]: number };
-  spawn_store: { [spawn: Id<StructureSpawn>]: number };
-  creep_store: { [creep: Id<Creep>]: number };
-  room: string;
-  constructor(room: Room) {
-    this.timestamp = Game.time;
-    this.room = room.name;
-    this.sources_store = {};
-    room.find(FIND_SOURCES).forEach((source) => (this.sources_store[source.id] = source.energy));
-    this.creep_store = {};
-    room.find(FIND_MY_CREEPS).forEach((creep) => (this.creep_store[creep.id] = creep.store.energy));
-    this.spawn_store = {};
-    room.find(FIND_MY_SPAWNS).forEach((spawn) => (this.spawn_store[spawn.id] = spawn.store.energy));
-  }
-  copy(): Simulated_State {
-    const state = _.cloneDeep(this);
-    Object.setPrototypeOf(state, Object.getPrototypeOf(this));
-    return state;
-  }
-  get_most_energetic_spawn(): Id<StructureSpawn> {
-    let most_energetic_spawn_id: Id<StructureSpawn> | null = null;
-    for (const key in this.spawn_store) {
-      const id = key as Id<StructureSpawn>;
-      if (!most_energetic_spawn_id || this.spawn_store[id] > this.spawn_store[most_energetic_spawn_id]) {
-        most_energetic_spawn_id = id;
-      }
-    }
-    // failing means there is no spawn
-    return most_energetic_spawn_id ?? panic();
-  }
-  // passes live simulated room state to fn until it returns true
-  until(fn: (room_state: Simulated_State) => boolean): Simulated_State {
-    const rolling_state = this.copy();
-    while (true) {
-      if (fn(rolling_state)) return rolling_state;
-      rolling_state.apply_tick();
-    }
-  }
-  verify(): boolean {
-    let result = true;
-    assert(this.timestamp === Game.time);
-    const room = Game.rooms[this.room] ?? panic();
-    const sources = room.find(FIND_SOURCES);
-    result = result && sources.length == values(this.sources_store).length;
-    result = result && _.all(sources.map((source) => this.sources_store[source.id] == source.energy));
-    const spawns = room.find(FIND_MY_SPAWNS);
-    result = result && spawns.length == values(this.spawn_store).length;
-    result = result && _.all(spawns.map((spawn) => spawn.store.energy == this.spawn_store[spawn.id]));
-    const creeps = room.find(FIND_CREEPS);
-    result = result && creeps.length == values(this.creep_store).length;
-    result = result && _.all(creeps.map((creep) => creep.store.energy == this.creep_store[creep.id]));
-    return result;
-  }
-  apply_tick() {
-    this.timestamp += 1;
-    for (const key in this.sources_store) {
-      const id = key as Id<Source>;
-      // TODO: regenerate sources
-    }
-    for (const key in this.spawn_store) {
-      const id = key as Id<StructureSpawn>;
-      const n = this.spawn_store[id];
-      if (n < 300) {
-        this.spawn_store[id] = n + 1;
-      }
-    }
-  }
-}
-type Intent = () => void;
-type Scheduled_Intents = { [time: Tick]: Array<Intent> };
-const scheduled_intents: Scheduled_Intents = {};
-type Intent_Result = ScreepsReturnCode;
-function push_intent(intent: () => Intent_Result, when: Tick) {
-  scheduled_intents[when] = scheduled_intents[when] ?? [];
-  scheduled_intents[when].push(intent);
-}
 function init(): void {
   console.log("-----INITIALIZING-----");
-  const room_state = new Simulated_State(Game.spawns.Spawn1.room);
-  assert(room_state.verify());
-  // only relies on auto-regen of the spawn
-  function spawn_creep_asap(state: Simulated_State): boolean {
-    const DEMANDED_ENERGY = 300;
-    const intent_fn = () =>
-      (Game.getObjectById(most_energetic_spawn_id ?? panic()) as StructureSpawn).spawnCreep(
-        bodypart_list,
-        assemble_creep_name()
-      );
-    const most_energetic_spawn_id = state.get_most_energetic_spawn();
-    const bodypart_list = [WORK, CARRY, MOVE, CARRY, MOVE];
-    if (state.spawn_store[most_energetic_spawn_id ?? panic()] >= DEMANDED_ENERGY) {
-      push_intent(intent_fn, state.timestamp);
-      return true;
-    }
-    return false;
-  }
-  function send_spawning_creeps_to_harvest(state: Simulated_State) {
-    return true;
-  }
-  // my aim is to produce 7 harvesters and put them to work
-  // this should predict when the last one gets produced
-  const state_after_spawn = room_state.until(spawn_creep_asap);
-  const state_after_starting_harvest = state_after_spawn.until(send_spawning_creeps_to_harvest);
-  const state_after_spawn_2 = spawn_creep_asap(state_after_starting_harvest);
 }
+
+type Depositable = StructureSpawn | StructureController | StructureExtension;
+const harvesting_creeps: { [id: Id<Creep>]: Id<Source> } = {};
+const creeps_depositing: { [id: Id<Creep>]: Id<Depositable> } = {};
 function tick() {
-  const intents_to_run = scheduled_intents[Game.time] ?? [];
-  values(intents_to_run).forEach((i) => i());
+  const rooms_with_spawns = _.uniq(values(Game.spawns).map((spawn) => spawn.room));
+  rooms_with_spawns.forEach((room: Room) => {
+    // harvesting
+    const spawns = room.find(FIND_MY_SPAWNS);
+    spawns.forEach((spawn) => {
+      const body = [WORK, CARRY, MOVE];
+      const cost = _.sum(body.map((part) => BODYPART_COST[part]));
+      if (spawn.spawning) {
+        return;
+      }
+      if (spawn.store.energy < cost) {
+        return;
+      }
+      const result = spawn.spawnCreep(body, assemble_creep_name());
+      if (result != OK) {
+        console.log("couldn't spawn harvester: " + result.toString());
+      }
+    });
+    const idle_creeps = values(Game.creeps).filter((creep) => !harvesting_creeps[creep.id]);
+    function pick_suitable_harvesting_source(creep: Creep) {
+      const sources = room.find(FIND_SOURCES)[0] ?? panic();
+      return sources;
+    }
+    idle_creeps.forEach((creep) => {
+      console.log("making creep harvest stuff:" + creep.name);
+      harvesting_creeps[creep.id] = pick_suitable_harvesting_source(creep).id;
+    });
+    keys(harvesting_creeps).filter((creep_string_id) => {
+      const creep_id = creep_string_id as Id<Creep>;
+      const creep = byId(creep_id) as Creep;
+      const ttl = creep.ticksToLive ?? panic();
+      const assigned_depositable = (room.find(FIND_MY_SPAWNS)[0] ?? panic()) as Depositable;
+      const path_to_deposit = PathFinder.search(creep.pos, assigned_depositable.pos);
+      const travel_cost = path_to_deposit.cost;
+      const creep_dying = travel_cost >= ttl;
+      // move to deposit, creep is dying
+      if (creep_dying) {
+        console.log(
+          "creep " +
+            creep.name +
+            " is dying, ttl is " +
+            ttl.toString() +
+            " while travel cost to deposit is " +
+            travel_cost.toString()
+        );
+        creeps_depositing[creep_id] = assigned_depositable.id;
+      }
+      // harvesting phase exit condition
+      if (creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0) {
+        creeps_depositing[creep_id] = assigned_depositable.id;
+      }
+      // depositing phase exit condition
+      if (creeps_depositing[creep_id] && creep.store.getUsedCapacity(RESOURCE_ENERGY) == 0 && !creep_dying) {
+        delete creeps_depositing[creep_id];
+      }
+
+      // creep is dead
+      if (ttl <= 1) {
+        // TODO: test for 0
+        delete harvesting_creeps[creep_id];
+      }
+
+      // intents
+      const assigned_source = room.find(FIND_SOURCES)[0];
+      if (creeps_depositing[creep_id]) {
+        const result =
+          assigned_depositable.structureType == STRUCTURE_CONTROLLER
+            ? creep.upgradeController(assigned_depositable)
+            : creep.transfer(assigned_depositable, RESOURCE_ENERGY);
+        if (result == ERR_NOT_IN_RANGE) {
+          creep.moveTo(assigned_depositable);
+        } else if (result != OK) {
+          console.log("unhandled depositing error: " + result.toString());
+        }
+      } else {
+        const result = creep.harvest(assigned_source);
+        if (result == ERR_NOT_IN_RANGE) {
+          creep.moveTo(assigned_source);
+        } else if (result != OK) {
+          console.log("unhandled harvesting error: " + result.toString());
+        }
+      }
+    });
+  });
 }
 export { init, tick };
