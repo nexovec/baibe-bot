@@ -1,9 +1,10 @@
 import * as _ from "lodash";
 import { assemble_creep_name, assert, byId, log, panic, values } from "utilities";
 import { profile } from "./profiler";
-import { surroundingPoints, EIGHT_DELTA } from "./weight-min-cut";
-import { keys, slice } from "lodash";
+import { surroundingPoints, EIGHT_DELTA, Point, minCutToExit } from "./weight-min-cut";
+import { keys, range, slice } from "lodash";
 import { spawn } from "child_process";
+import { Not_Implemented } from "./utilities";
 // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
 
 type Tick = number;
@@ -17,27 +18,38 @@ const creeps_depositing: { [id: Id<Creep>]: Id<Depositable> } = {};
 function get_body_cost(body: BodyPartConstant[]): number {
   return _.sum(body.map((part) => BODYPART_COST[part]));
 }
-function get_ideal_harvester_count_of_source(source: Source, body: BodyPartConstant[]) {
+function get_parkable_spots(source: Source): Point[] {
   const room = source.room;
   const spots = surroundingPoints(source.pos);
   const parkable_spots = spots.filter((spot) => {
     const terrain = room.getTerrain().get(spot.x, spot.y);
     return terrain != TERRAIN_MASK_WALL;
   });
+  return parkable_spots;
+}
+function get_ideal_harvester_count_of_source(source: Source, depositable: Depositable, body: BodyPartConstant[]) {
+  const parkable_spots = get_parkable_spots(source);
   const work_part_count = body.filter((part) => part === WORK).length;
   const carry_part_count = body.filter((part) => part === CARRY).length;
-  const controller = source.room.controller ?? panic();
-  const path_cost = PathFinder.search(source.pos, { pos: controller.pos, range: 1 }).cost;
+  // const controller = source.room.controller ?? panic();
+  // const path_cost = PathFinder.search(source.pos, { pos: controller.pos, range: 1 }).cost;
+  const path_cost = PathFinder.search(source.pos, { pos: depositable.pos, range: 1 }).cost;
   // loss is in energy units
+  // loss is in energy depositables
   // FIXME: not accounting for the away loss of the extra creeps
-  const loss_to_away_from_source = path_cost * work_part_count * parkable_spots.length * HARVEST_POWER * 2;
-  const needed_extra = Math.ceil(loss_to_away_from_source / (carry_part_count * CARRY_CAPACITY * HARVEST_POWER));
+  const count = parkable_spots.length;
+  let loss_to_away_from_source = path_cost * work_part_count * count * HARVEST_POWER * 2;
+  const needed_extra = loss_to_away_from_source / (carry_part_count * CARRY_CAPACITY * HARVEST_POWER);
+  loss_to_away_from_source = path_cost * work_part_count * Math.floor(needed_extra) * HARVEST_POWER * 2;
+  const needed_extra_extra = loss_to_away_from_source / (carry_part_count * CARRY_CAPACITY * HARVEST_POWER);
+
   // TODO: limit based on how fast they can outharvest the source regeneration
-  return parkable_spots.length + needed_extra;
+  log("Extra extra needed: " + needed_extra_extra.toString());
+  return parkable_spots.length + Math.ceil(needed_extra) + Math.ceil(needed_extra_extra);
 }
-function get_ideal_harvester_count(room: Room, body: BodyPartConstant[]) {
+function get_ideal_harvester_count(room: Room, depositable: Depositable, body: BodyPartConstant[]) {
   const sources = room.find(FIND_SOURCES);
-  const parkable_spots = sources.map((source) => get_ideal_harvester_count_of_source(source, body));
+  const parkable_spots = sources.map((source) => get_ideal_harvester_count_of_source(source, depositable, body));
   return _.sum(parkable_spots);
 }
 function count_harvesters_assigned_to_source(source: Source) {
@@ -64,10 +76,73 @@ function flood_fill(point: RoomPosition) {
   continue_filling(point, mat);
 }
 
+function find_closest_spawn(creep: Creep, room?: Room): StructureSpawn | undefined {
+  // eslint-disable-next-line no-param-reassign
+  room = room ?? creep.room;
+  return _.sortBy(room.find(FIND_MY_SPAWNS), (spawn) => PathFinder.search(creep.pos, { pos: spawn.pos, range: 1 }))[0];
+}
+
+function pick_suitable_harvesting_source(creep: Creep): Source | null {
+  // NOTEs:
+  // it assumes no roads have been built
+  // it assumes you want to deposit to the closest spawn
+  const closest_spawn = find_closest_spawn(creep) ?? panic();
+  const candidates = suitable_harvesting_sources(creep, closest_spawn as Depositable);
+  const result =
+    // _.sortBy(candidates, (source) => {
+    //   return _.min(spawns.map((spawn) => PathFinder.search(source.pos, { pos: spawn.pos, range: 1 }).cost));
+    // })[0] ?? null;
+    _.sortBy(candidates, (source) => {
+      return PathFinder.search(source.pos, { pos: closest_spawn.pos, range: 1 }).cost;
+    })[0] ?? null;
+  return result;
+  // return candidates[_.random(0, candidates.length - 1)];
+}
+
+// it assumes you only harvest in a single room
+function suitable_harvesting_sources(creep: Creep, depositable: Depositable): Source[] {
+  const room = creep.room;
+  const sources = room.find(FIND_SOURCES);
+  const source_now = harvesting_creeps[creep.id];
+  delete harvesting_creeps[creep.id];
+  const available_sources = sources.filter((source) => {
+    const ideal = get_ideal_harvester_count_of_source(source, depositable, BASIC_HARVESTER_BODY);
+    const actual = count_harvesters_assigned_to_source(source);
+    // console.log("source ideally wants " + ideal.toString() + " harvesters, but only has " + actual.toString());
+    return ideal > actual;
+  });
+  if (available_sources.length == 0) {
+    // this shouldn't ever happen
+    log(creep.name + " can not harvest");
+    return [];
+  }
+  const sorted = _.sortBy(
+    available_sources,
+    (source) =>
+      get_ideal_harvester_count_of_source(source, depositable, BASIC_HARVESTER_BODY) -
+      count_harvesters_assigned_to_source(source)
+  );
+  let top = "0";
+  for (const i in sorted) {
+    const source = sorted[i];
+    if (
+      get_ideal_harvester_count_of_source(source, depositable, BASIC_HARVESTER_BODY) !=
+      get_ideal_harvester_count_of_source(sorted[0], depositable, BASIC_HARVESTER_BODY)
+    ) {
+      break;
+    }
+    top = i;
+  }
+  const n = parseInt(top);
+  const finalists = slice(sorted, 0, n + 1);
+  // picks at random from sources with the same amount of creeps missing
+  harvesting_creeps[creep.id] = source_now;
+  return finalists;
+}
 function tick(): void {
   const rooms_with_spawns = _.uniq(values(Game.spawns).map((spawn) => spawn.room));
   rooms_with_spawns.forEach((room: Room) => {
-    // constructing
+    // constructing roads
     const controller = room.controller;
     if (controller === undefined) return;
     if (controller.level >= 1) {
@@ -98,20 +173,34 @@ function tick(): void {
           console.log("construction placement error: " + result.toString());
         }
       });
-    } else {
-      console.log("not enough level");
+    }
+    if (controller.level >= 2) {
+      // TODO: construct ramparts
+      // // const ramparts: RoomPosition[] = []
+      // const source_positions = room.find(FIND_SOURCES).map((s) => {
+      //   return { pos: s.pos, range: 1 };
+      // });
+      // // const spawn_positions = room.find(FIND_MY_SPAWNS).map((s) => {
+      // //   return { pos: s.pos, range: 1 };
+      // // });
+      // // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      // // const positions = _.concat(source_positions, ...spawn_positions);
+      // const positions = [...source_positions, ...spawn_positions];
+      // for (const rampart of minCutToExit(positions, new CostMatrix())) {
+      //   room.createConstructionSite(rampart.pos.x, rampart.pos.y, STRUCTURE_RAMPART);
+      // }
     }
     // spawning
     const spawns = room.find(FIND_MY_SPAWNS);
+    const cost = get_body_cost(BASIC_HARVESTER_BODY);
     spawns.forEach((spawn) => {
-      const cost = get_body_cost(BASIC_HARVESTER_BODY);
       if (spawn.spawning) {
         return;
       }
       if (spawn.store.energy < cost) {
         return;
       }
-      const needed_harvesters = get_ideal_harvester_count(room, BASIC_HARVESTER_BODY);
+      const needed_harvesters = get_ideal_harvester_count(room, spawn, BASIC_HARVESTER_BODY);
       // log(needed_harvesters.toString() + " harvesters needed");
       if (values(Game.creeps).length >= needed_harvesters) {
         return;
@@ -124,49 +213,6 @@ function tick(): void {
     const idle_creeps = values(Game.creeps).filter((creep) => {
       return !creep.spawning && !harvesting_creeps[creep.id];
     });
-    function suitable_harvesting_sources(creep: Creep): Source[] {
-      const sources = room.find(FIND_SOURCES);
-      const source_now = harvesting_creeps[creep.id];
-      delete harvesting_creeps[creep.id];
-      const available_sources = sources.filter((source) => {
-        const ideal = get_ideal_harvester_count_of_source(source, BASIC_HARVESTER_BODY);
-        const actual = count_harvesters_assigned_to_source(source);
-        // console.log("source ideally wants " + ideal.toString() + " harvesters, but only has " + actual.toString());
-        return ideal > actual;
-      });
-      if (available_sources.length == 0) {
-        // this shouldn't ever happen
-        log(creep.name + " can not harvest");
-        return [];
-      }
-      const sorted = _.sortBy(
-        available_sources,
-        (source) =>
-          get_ideal_harvester_count_of_source(source, BASIC_HARVESTER_BODY) -
-          count_harvesters_assigned_to_source(source)
-      );
-      let top = "0";
-      for (const i in sorted) {
-        const source = sorted[i];
-        if (
-          get_ideal_harvester_count_of_source(source, BASIC_HARVESTER_BODY) !=
-          get_ideal_harvester_count_of_source(sorted[0], BASIC_HARVESTER_BODY)
-        ) {
-          break;
-        }
-        top = i;
-      }
-      const n = parseInt(top);
-      const finalists = slice(sorted, 0, n + 1);
-      // picks at random from sources with the same amount of creeps missing
-      harvesting_creeps[creep.id] = source_now;
-      return finalists;
-    }
-    function pick_suitable_harvesting_source(creep: Creep) {
-      // it just returns a random candidate
-      const candidates = suitable_harvesting_sources(creep);
-      return candidates[_.random(0, candidates.length - 1)];
-    }
     idle_creeps.forEach((creep) => {
       // console.log("making creep harvest stuff: " + creep.name);
       const source = pick_suitable_harvesting_source(creep);
@@ -192,12 +238,18 @@ function tick(): void {
       //   throw Error("Couldn't find creep " + creep_id);
       // }
       const ttl = creep.ticksToLive ?? panic();
-
-      const available_spawns = room.find(FIND_MY_SPAWNS);
-      const assigned_depositable =
-        available_spawns.find((spawn) => spawn.store.getFreeCapacity(RESOURCE_ENERGY) != 0) ??
-        room.controller ??
-        panic();
+      const available_spawns: (StructureSpawn | undefined)[] = _.sortBy(
+        room.find(FIND_MY_SPAWNS).filter((spawn) => spawn.store.getFreeCapacity(RESOURCE_ENERGY) != 0),
+        (spawn) => {
+          const path = PathFinder.search((byId(harvesting_creeps[creep_id]) ?? panic()).pos, {
+            pos: spawn.pos,
+            range: 1
+          });
+          if (path.incomplete) Not_Implemented();
+          return path.cost;
+        }
+      );
+      const assigned_depositable = available_spawns[0] ?? room.controller ?? panic();
 
       const path_to_deposit = PathFinder.search(creep.pos, { pos: assigned_depositable.pos, range: 1 });
       const travel_cost = path_to_deposit.cost;
@@ -222,10 +274,7 @@ function tick(): void {
         const creep = values(Game.creeps)[0];
         const LOWER_ASSISTANCE_AMOUNT_LIMIT = 20;
         const demanded: number = get_body_cost(BASIC_HARVESTER_BODY);
-        const closest_spawn =
-          _.sortBy(room.find(FIND_MY_SPAWNS), (spawn) =>
-            PathFinder.search(creep.pos, { pos: spawn.pos, range: 1 })
-          )[0] ?? panic();
+        const closest_spawn = find_closest_spawn(creep) ?? panic();
         const spawn_e = closest_spawn.store.getUsedCapacity(RESOURCE_ENERGY);
         const creep_e = creep.store.getUsedCapacity(RESOURCE_ENERGY);
         const can_assist_spawning =
@@ -244,10 +293,6 @@ function tick(): void {
           return;
         }
       }
-      // else {
-      //   const available = pick_suitable_harvesting_source(creep);
-      //   const actual = harvesting_creeps[creep_id];
-      // }
 
       // creep is dead
       if (ttl <= 0) {

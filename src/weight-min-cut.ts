@@ -65,7 +65,7 @@ import { deepStrictEqual } from "assert";
  * each round of bfs. See the comments in the code for details.
  */
 
-interface Point {
+export interface Point {
   x: number;
   y: number;
 }
