@@ -1,7 +1,7 @@
 import * as _ from "lodash";
 import { assemble_creep_name, assert, byId, log, panic, values } from "utilities";
 import { profile } from "./profiler";
-import { surroundingPoints } from "./weight-min-cut";
+import { surroundingPoints, EIGHT_DELTA } from "./weight-min-cut";
 import { keys, slice } from "lodash";
 import { spawn } from "child_process";
 // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
@@ -17,7 +17,8 @@ const creeps_depositing: { [id: Id<Creep>]: Id<Depositable> } = {};
 function get_body_cost(body: BodyPartConstant[]): number {
   return _.sum(body.map((part) => BODYPART_COST[part]));
 }
-function get_ideal_harvester_count_of_source(room: Room, source: Source, body: BodyPartConstant[]) {
+function get_ideal_harvester_count_of_source(source: Source, body: BodyPartConstant[]) {
+  const room = source.room;
   const spots = surroundingPoints(source.pos);
   const parkable_spots = spots.filter((spot) => {
     const terrain = room.getTerrain().get(spot.x, spot.y);
@@ -36,7 +37,7 @@ function get_ideal_harvester_count_of_source(room: Room, source: Source, body: B
 }
 function get_ideal_harvester_count(room: Room, body: BodyPartConstant[]) {
   const sources = room.find(FIND_SOURCES);
-  const parkable_spots = sources.map((source) => get_ideal_harvester_count_of_source(room, source, body));
+  const parkable_spots = sources.map((source) => get_ideal_harvester_count_of_source(source, body));
   return _.sum(parkable_spots);
 }
 function count_harvesters_assigned_to_source(source: Source) {
@@ -44,6 +45,24 @@ function count_harvesters_assigned_to_source(source: Source) {
 }
 
 const BASIC_HARVESTER_BODY = [WORK, CARRY, MOVE];
+
+const CostMatrix = PathFinder.CostMatrix;
+type CostMatrix = typeof PathFinder.CostMatrix;
+
+// NOTE: ignores the origin point
+// TODO: test
+function flood_fill(point: RoomPosition) {
+  function continue_filling(point: RoomPosition, m: CostMatrix) {
+    for (const delta of EIGHT_DELTA) {
+      const new_point = new RoomPosition(point.x + delta.x, point.y + delta.y, point.roomName);
+      if (!m.get(new_point.x, new_point.y)) {
+        continue_filling(new_point, m);
+      }
+    }
+  }
+  const mat = new CostMatrix();
+  continue_filling(point, mat);
+}
 
 function tick(): void {
   const rooms_with_spawns = _.uniq(values(Game.spawns).map((spawn) => spawn.room));
@@ -105,12 +124,12 @@ function tick(): void {
     const idle_creeps = values(Game.creeps).filter((creep) => {
       return !creep.spawning && !harvesting_creeps[creep.id];
     });
-    function pick_suitable_harvesting_source(creep: Creep): Source | null {
+    function suitable_harvesting_sources(creep: Creep): Source[] {
       const sources = room.find(FIND_SOURCES);
       const source_now = harvesting_creeps[creep.id];
       delete harvesting_creeps[creep.id];
       const available_sources = sources.filter((source) => {
-        const ideal = get_ideal_harvester_count_of_source(room, source, BASIC_HARVESTER_BODY);
+        const ideal = get_ideal_harvester_count_of_source(source, BASIC_HARVESTER_BODY);
         const actual = count_harvesters_assigned_to_source(source);
         // console.log("source ideally wants " + ideal.toString() + " harvesters, but only has " + actual.toString());
         return ideal > actual;
@@ -118,33 +137,35 @@ function tick(): void {
       if (available_sources.length == 0) {
         // this shouldn't ever happen
         log(creep.name + " can not harvest");
-        return null;
+        return [];
       }
-      assert(available_sources.length > 0);
       const sorted = _.sortBy(
         available_sources,
         (source) =>
-          get_ideal_harvester_count_of_source(room, source, BASIC_HARVESTER_BODY) -
+          get_ideal_harvester_count_of_source(source, BASIC_HARVESTER_BODY) -
           count_harvesters_assigned_to_source(source)
       );
       let top = "0";
       for (const i in sorted) {
         const source = sorted[i];
         if (
-          get_ideal_harvester_count_of_source(room, source, BASIC_HARVESTER_BODY) !=
-          get_ideal_harvester_count_of_source(room, sorted[0], BASIC_HARVESTER_BODY)
+          get_ideal_harvester_count_of_source(source, BASIC_HARVESTER_BODY) !=
+          get_ideal_harvester_count_of_source(sorted[0], BASIC_HARVESTER_BODY)
         ) {
           break;
         }
         top = i;
       }
-      harvesting_creeps[creep.id] = source_now;
       const n = parseInt(top);
       const finalists = slice(sorted, 0, n + 1);
       // picks at random from sources with the same amount of creeps missing
-      // TODO: prioritize sources that will have no possible congestion at their parking spots first
-      // TODO: prioritize distance to controller second
-      return finalists[_.random(0, n)];
+      harvesting_creeps[creep.id] = source_now;
+      return finalists;
+    }
+    function pick_suitable_harvesting_source(creep: Creep) {
+      // it just returns a random candidate
+      const candidates = suitable_harvesting_sources(creep);
+      return candidates[_.random(0, candidates.length - 1)];
     }
     idle_creeps.forEach((creep) => {
       // console.log("making creep harvest stuff: " + creep.name);

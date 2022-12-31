@@ -72,7 +72,7 @@ interface Point {
 
 // the eight surrounding points of a tile
 // note the order here is somehow important, the element i and (i + 4) % 8 should be the opposite direction
-const EIGHT_DELTA = [
+export const EIGHT_DELTA = [
   { x: 0, y: -1 }, // TOP
   { x: 1, y: -1 }, // TOP_RIGHT
   { x: 1, y: 0 }, // RIGHT
